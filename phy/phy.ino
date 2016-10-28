@@ -1,6 +1,7 @@
 #include <QueueArray.h>
 #define LED_PIN 11
 #define DETECTION_THRESHOLD 0
+#define PHY_IDLE_STATE 0
 #define PHY_IDLE_STATE_0 1  //4 states in PHY_IDLE
 #define PHY_IDLE_STATE_1 2
 #define PHY_IDLE_STATE_2 3
@@ -12,10 +13,15 @@
 #define TIMER1COUNT 64545    //65535-16Mhz/8/Freq currently configured for 2Khz
 #define BYTE_LEN 8
 
-
+//idle state-ON,OFF,ON
 class volcanoPHY{
   
   public:
+  //bool beginTransmitcheck=false;
+  bool transmitBusy;
+  int8_t transmitCount;
+  bool isSynchronized;
+  bool bitTransmitcheck;
   bool txStatus,rxStatus,currentBit;
   void phy_tx();
   void phy_rx();
@@ -26,6 +32,7 @@ class volcanoPHY{
   QueueArray <uint8_t> phy_tx_message_queue;
   QueueArray <uint8_t> phy_rx_message_queue;
   QueueArray <bool> phy_tx_bit_queue;
+  QueueArray <bool> phy_rx_bit_queue;
   
 };
 volcanoPHY phy;
@@ -43,8 +50,45 @@ void phy::beginTransmit()
 {
   if(phy_tx_bit_queue.count)
   {
+    //condition to check whether any other bit is being transmitted
+    if(!transmitBusy)
+    {
     currentBit=dequeue(phy_tx_bit_queue);
-    
+    transmitCount=0;
+    transmitBusy=true;
+    }
+    if(currentBit==true)
+    {
+      if(transmitCount==0)
+      {
+       transmitCount++;
+       digitalWrite(LED_PIN,HIGH); 
+
+      }
+      else if (transmitCount==1)
+      {
+        digitalWrite(LED_PIN,LOW);
+        transmitBusy=false;
+        transmitCount=0;
+      }
+    }
+
+    else if(currentBit==false)
+    {
+      if(transmitCount==0)
+      {
+       transmitCount++;
+       digitalWrite(LED_PIN,LOW); 
+
+      }
+      else if (transmitCount==1)
+      {
+        digitalWrite(LED_PIN,HIGH);
+        transmitBusy=false;
+        transmitCount=0;
+      }
+    }
+
   }
 }
 
@@ -100,37 +144,39 @@ void volcanoPHY::runPhyFSM(uint8_t currentState)
   //state machine for the PHY layer
   switch(currentState)
   {
-  case PHY_IDLE_STATE_0:
+//  case PHY_IDLE_STATE_0:
+//
+//  break;
+//
+//  case PHY_IDLE_STATE_1:
+//
+//  break;
+//
+//  case PHY_IDLE_STATE_2:
+//
+//  break;
+//
+//  case PHY_IDLE_STATE_3:
+//
+//  break;
 
+  case PHY_IDLE_STATE:
+  phy_tx_bit_queue.enqueue(false);
+  phy_tx_bit_queue.enqueue(true);
   break;
 
-  case PHY_IDLE_STATE_1:
-
-  break;
-
-  case PHY_IDLE_STATE_2:
-
-  break;
-
-  case PHY_IDLE_STATE_3:
-
-  break;
-
-  case PHY_READY:
-
-  break;
+//  case PHY_READY:
+//
+//  break;
 
   case PHY_TX:
-
+  phy_tx();
   break;
 
   case PHY_RX:
-
+  phy_rx();
   break;
-
-  case PHY_TX_RX:
-
-  break;
+  
   }
 }
 
