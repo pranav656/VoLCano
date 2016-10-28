@@ -9,36 +9,34 @@
 #define MAC_ACK_LEN 0
 #define MAC_PDU_MAX_LEN 261 // src(1) + dst(1) + res(1) + nav(1) + data(255) + fcs(2)
 
-uint8_t mac_state;
-uint8_t random_cw;
-uint8_t i;
-bool b_medium_idle;
-
-QueueArray <char> mac_queue;
-
-void _access_mac();
-void _rx_mac();
-void _calculate_fcs();
-
-void _mac_idle();
-void _mac_init_wait();
-void _mac_random_cw();
-void _mac_wait_cw();
-void _mac_access();
-void _mac_wait_ack(); // read phy
-void _mac_fsm_control();
-
 class volcanoMAC {
-    
+    uint8_t mac_state;
+    uint8_t random_cw;
+    uint8_t i;
+    bool b_medium_idle;
+    QueueArray <char> mac_queue;
+
+    void _access_mac();
+    void _rx_mac();
+    void _calculate_fcs();
+    void _mac_idle();
+    void _mac_init_wait();
+    void _mac_random_cw();
+    void _mac_wait_cw();
+    void _mac_access();
+    void _mac_wait_ack(); // read phy
+    void _mac_fsm_control();        
+  
   public:
-    
+    char mac_rx();
+    void mac_tx();
 }
 
-public char mac_rx() {
+char volcanoMAC::mac_rx() {
   mac_queue.dequeue();
 }
 
-public void mac_tx() {
+void volcanoMAC::mac_tx() {
   mac_queue.enqueue();
 }
 
