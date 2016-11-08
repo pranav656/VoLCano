@@ -2,7 +2,7 @@
 //Logs:
 //Updated PHY layer implementation, removed sync and unused functions
 //Removed unnecesary class based implementation
-//
+
 
 #include<QueueArray.h>
 #include<math.h>
@@ -34,6 +34,7 @@ bool phySense(); //function used to sense the physical layer
 void beginTransmit(); //starts actual transmission of message
 void formRxByte(); //function used to form the byte
 bool phyDetect(); // function used to detect the data on the analog port
+bool phySense();//returns true if node is idle
 bool prevData;
 int byte_pos=0;
 void updateBitQueue(); //function used to convert the bytes to bits
@@ -59,6 +60,9 @@ ISR(TIMER1_OVF_vect)
   phyDetect(); //function used to check whether any data is available
   if(phy_tx_message_queue.count()){ //checks whether any data is available in the buffer. If yes, then transmits it
     currentPhyState=PHY_TX;
+  }
+  else {
+    currentPhyState=PHY_IDLE_STATE;
   }
   runPhyFSM(currentPhyState);  
   TCNT1 = TIMER1COUNT;
@@ -112,6 +116,16 @@ void decodeFrame(uint8_t byte){
 
   else if(byte_pos == (4+data_to_be_rec)){
     byte_pos=0;
+  }
+}
+
+bool phySense()
+{
+  if(currentPhyState==PHY_IDLE_STATE){
+    return true; //returns true if idle
+  }
+  else{
+    return false;
   }
 }
 
@@ -293,6 +307,7 @@ bool phyDetect()
   }
   if(currentRx>prevRx && prevData!=false) // detects rising edge(true) and prevents misdetection of false
   {
+    currentPhyState=PHY_RX; //setting this variable so that phySense() does not improperly detect this as idle State
     risingEdge=true;
     fallingEdge=false;
     phy_rx_bit_queue.enqueue(true);
@@ -301,6 +316,7 @@ bool phyDetect()
 
   if(currentRx<prevRx && prevData!=true) // detects falling edge(false) and prevents misdetection of true
   {
+    currentPhyState=PHY_RX; //setting this variable so that phySense() does not improperly detect this as idle State
     risingEdge=false;
     fallingEdge=true;
     phy_rx_bit_queue.enqueue(false);
@@ -308,6 +324,7 @@ bool phyDetect()
   }
 
   if(bitCount==8){ //once 8 bits are received, a byte is formed from it.
+    currentPhyState=PHY_RX; //setting this variable so that phySense() does not improperly detect this as idle State
     bitCount=0;
     formRxByte();
     decodeFrame(phy_rx_message_queue.dequeue());
