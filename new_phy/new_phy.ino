@@ -311,6 +311,7 @@ bool phyDetect()
     risingEdge=true;
     fallingEdge=false;
     phy_rx_bit_queue.enqueue(true);
+    prevData=true;
     bitCount++;
   }
 
@@ -320,6 +321,7 @@ bool phyDetect()
     risingEdge=false;
     fallingEdge=true;
     phy_rx_bit_queue.enqueue(false);
+    prevData=false;
     bitCount++;
   }
 
