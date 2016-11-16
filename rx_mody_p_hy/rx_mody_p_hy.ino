@@ -5,6 +5,8 @@
 //Updated updateBitQueue() fn, Added debugging options, phy_tx() working from main loop at 10Hz update rate, not working at higher rates,need update in architecture
 //Unable to detect Rx pulses. Must be fixed either in code architecture by decreasing Freq
 //added faster adc takes about 15us to execute, added timer synchronization(can operate at two freq. 4000Hz and 1000Hz), bytes are decoded with a very high error rate
+#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
+#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
 #include<QueueArray.h>
 #include<math.h>
 #define NODE_ADDR 0x01 // adress of current Node
@@ -13,16 +15,20 @@
 #define DETECTION_THRESHOLD 0
 #define PHY_IDLE_STATE 0
 #define RX_LOW_THRESHOLD -1
-#define RX_HIGH_THRESHOLD 50
+#define RX_HIGH_THRESHOLD 150
+//#define FAST_ADC 1
+#define FAST_ADC_2
 #define PHY_TX 5
 #define PHY_RX 6
+//#define TIMER1COUNT 61535 //Freq configuration for 500Hz
+#define TIMER1COUNT 65500    //65535-16Mhz/8/Freq currently configured for 2Khz
+#define BYTE_LEN 8
+//#define TEST_TX
 #define CLOCK_FREQ 16000000
 #define PRESCALAR_TIMER 8
-#define TIMER1COUNT 61535 //Freq configuration for 500Hz
-//#define TIMER1COUNT 64545    //65535-16Mhz/8/Freq currently configured for 2Khz
-#define BYTE_LEN 8
-#define TEST_TX
-
+int timerFreq=2000;
+bool syncTimer=true;
+int16_t timerControlVariable= (65535) - CLOCK_FREQ/(PRESCALAR_TIMER * timerFreq);
 //idle state-ON,OFF,ON
   //bool beginTransmitcheck=false;
 bool transmitBusy; //bit used to indicate whether the phy layer is currently transmitting
@@ -45,6 +51,7 @@ void updateBitQueue(); //function used to convert the bytes to bits
 uint8_t rx_buffer[263]; //message used to store the received data
 uint8_t rx_buff[263]; //test variable used to cpy received data
 uint8_t tx_message;
+unsigned long TimerFreq;
 unsigned char currentLedState,currentPhyState;
 void runPhyFSM(uint8_t currentState);  
 QueueArray <uint8_t> phy_tx_message_queue; //tx byte queue
@@ -56,13 +63,31 @@ long prevTime;
 bool data_available=false;
 bool wait_true= true;
 bool wait_false=true;
-unsigned long timerFreq=1000;
-unsigned long timerControlVariable= (65535) - CLOCK_FREQ/(PRESCALAR_TIMER * timerFreq);
+
+void ADC_setup(){
+  ADCSRA =  bit (ADEN);                      // turn ADC on
+  ADCSRA |= bit (ADPS0) |  bit (ADPS1) | bit (ADPS2);  // Prescaler of 128
+  ADMUX  =  bit (REFS0) | bit (REFS1);    // internal 1.1v reference
+}
+
+void ADC_start_conversion(int adc_pin){
+  ADMUX &= ~(0x07) ; //clearing enabled channels
+  ADMUX  |= (adc_pin & 0x07) ;    // AVcc and select input port
+  bitSet (ADCSRA, ADSC) ;
+}
+
+int ADC_read_conversion(){
+ while(bit_is_set(ADCSRA, ADSC));
+ return ADC ;
+}
 
 ISR(TIMER1_OVF_vect)
 { 
   //ISR called every time timer register overflows
   phyDetect(); //function used to check whether any data is available
+
+  
+  
 //  Serial.print("MQC=");
 //  Serial.println(phy_tx_message_queue.count());
 //  Serial.print("BQC=");
@@ -73,51 +98,65 @@ ISR(TIMER1_OVF_vect)
   else {
     currentPhyState=PHY_IDLE_STATE;
   }
-  runPhyFSM(currentPhyState);  
+#ifdef FAST_ADC
+//  ADC_start_conversion(0);
+#endif
+//  runPhyFSM(currentPhyState);  
   TCNT1 = timerControlVariable;
 }
 
 void formRxByte()
 {
   //Function that is used to form the Byte from the received bits
-  char byte=0x00;  
+  unsigned char ubyte=0x00;  
     for(int j=0;j<8;j++){
       if(phy_rx_bit_queue.dequeue()){
-             byte = byte|(0x01<<j);
+             ubyte = ubyte|(0x01<<j);
       }
       else{
-        byte=byte;
+        ubyte=ubyte;
       }
     }
-    phy_rx_message_queue.enqueue(byte);
+    decodeFrame(ubyte);
+//    phy_rx_message_queue.enqueue(byte);
 }
+
+
 bool wait;
 char bitCount=0;
-
-
-void decodeFrame(uint8_t byte){
+bool pState=false;
+unsigned char g_ubyte;
+void decodeFrame(uint8_t ubyte){
+//  pState=!pState;
+//  digitalWrite(13,pState);
+  g_ubyte=ubyte;
+//  Serial.println(ubyte,HEX);
+ 
   // function used to decode each byte and make a frame
   if(byte_pos==0){
-    if(byte==0xFF){
+    if(ubyte==0xFF){
+//        pState=!pState;
+//        digitalWrite(12,pState);
         byte_pos++;
-        rx_buffer[0]=byte;
+        rx_buffer[0]=ubyte;
+//        syncTimer=true;
         data_available=false;      
     }
   }
 
   else if(byte_pos>=1 && byte_pos<=3){
     byte_pos++;
-    rx_buffer[byte_pos]=byte;
+    rx_buffer[byte_pos]=ubyte;
   }
 
   else if(byte_pos==4){
-    rx_buffer[byte_pos]=byte;
-    data_to_be_rec=byte;
+    rx_buffer[byte_pos]=ubyte;
+    data_to_be_rec=ubyte;
     byte_pos++;
   }
 
   else if(byte_pos>4 && byte_pos<4+data_to_be_rec){
-    rx_buffer[byte_pos]=byte;
+    rx_buffer[byte_pos]=ubyte;
     byte_pos++;
     data_available=true;
   }
@@ -171,22 +210,19 @@ void beginTransmit()
       
     if(currentBit==true)
     {
-      
       if(transmitCount==0)
       {
        transmitBusy=true;
        transmitCount++;
        digitalWrite(LED_TX_PIN,LOW);  //2-ppm encoding used to encode and send 0s and 1s
-//       Serial.println(0);
-//       Serial.println("LOW t");      
+       Serial.println("LOW t");      
       }
       else if (transmitCount==1)
       {
         digitalWrite(LED_TX_PIN,HIGH); //2-ppm encoding used to encode and send 0s and 1s
         transmitBusy=false;
         transmitCount=0;
-//        Serial.println(1);
-//        Serial.println("HIGH");
+        Serial.println("HIGH");
       }
     }
 
@@ -197,16 +233,14 @@ void beginTransmit()
        transmitCount++;
        transmitBusy=true;
        digitalWrite(LED_TX_PIN,HIGH); //2-ppm encoding used to encode and send 0s and 1s
-//       Serial.println(1);
-//       Serial.println("HIGH f");
+       Serial.println("HIGH f");
       }
       else if (transmitCount==1)
       {
         digitalWrite(LED_TX_PIN,LOW); //2-ppm encoding used to encode and send 0s and 1s
         transmitBusy=false;
         transmitCount=0;
-//        Serial.println(0);
-//        Serial.println("LOW");
+        Serial.println("LOW");
       }
     }
 
@@ -314,27 +348,142 @@ void initializeTimerLed()
   TCNT1 = TIMER1COUNT;
   TCCR1B |= (1 << CS11);
   TIMSK1 |= (1 << TOIE1);
+  TCNT1 = timerControlVariable;
   interrupts();
   pinMode(LED_TX_PIN,OUTPUT);
   pinMode(LED_RX_PIN,INPUT);
   
 }
 
+bool bit_buffer[2];
+bool byte_buff[8];
+unsigned char byte_rec;
+unsigned char bit_buff_count=0;
+//unsigned char bitCount=0;
+unsigned char tmpByte;
+void decodeBitBuff()
+{
+//  Serial.println("db");
+  if(bit_buffer[0] == false && bit_buffer[1] ==true )
+  {
+    addBitData(true);
+//  pState=!pState;
+//  digitalWrite(13,pState);
+//    digitalWrite(13,HIGH);
+//    Serial.println("t");
+//    phy_rx_bit_queue.enqueue(true);
+//    digitalWrite(12,HIGH);
+    
+  }
+
+  else if(bit_buffer[0] == true && bit_buffer[1] == false){
+//    Serial.println("f");
+//    phy_rx_bit_queue.enqueue(false);
+//    digitalWrite(12,LOW);
+//  digitalWrite(13,LOW);
+  addBitData(false);
+  }
+}
+uint8_t g_byte_rec;
+void formRxData()
+{
+  byte_rec=0x00;
+  for(int i=0; i<8; i++){
+    if(byte_buff[i]){
+      byte_rec = byte_rec|(0x01<<i);
+    }
+    else {
+      byte_rec = byte_rec;
+    }
+  }
+//  pState=!pState;
+//  digitalWrite(12,pState);
+  g_byte_rec=byte_rec;
+  decodeFrame(byte_rec);
+}
+
+void addBitData(bool var){
+  byte_buff[bitCount]=var;
+  bitCount++;
+  if(bitCount==8){
+    bitCount=0;
+//    syncTimer=true;
+    formRxData();
+  }
+//  Serial.println(bitCount);
+//  if(bitCount==8){
+//    syncTimer=true;
+//    formRxData();
+//    bitCount=0;
+//  }
+//  else{
+//    bitCount++; 
+//  }
+}
+unsigned long startAdcTime,endAdcTime;
 bool phyDetect()
 {
-  currentAnalogRx=analogRead(LED_RX_PIN);
+ 
+//  Serial.println(bitCount);
+//  Serial.println(bit_buff_count);
+#ifdef FAST_ADC
+    currentAnalogRx=ADC_read_conversion();
+    ADC_start_conversion(0);
+    Serial.println(currentAnalogRx);
+#else
+//    startAdcTime=micros();
+    currentAnalogRx=analogRead(LED_RX_PIN);
+//    endAdcTime=micros();
+//    Serial.println(endAdcTime - startAdcTime);
+    Serial.println(currentAnalogRx);
+#endif
+//  Serial.println(currentAnalogRx);
   //checks for threshold and rising edge
-  if(currentAnalogRx >= RX_LOW_THRESHOLD && (currentAnalogRx <= RX_LOW_THRESHOLD + 10))
+  if(currentAnalogRx >= RX_LOW_THRESHOLD && (currentAnalogRx <= RX_LOW_THRESHOLD + 20))
   {
 //    Serial.println("LOW"); //uncomment to debug
+    digitalWrite(12,LOW);
     currentRx=false;
+    if(!syncTimer){
+    if(bit_buff_count==0){
+//      PORTB&= ~_BV(PB4);
+//      digitalWrite(12,LOW);
+      bit_buffer[bit_buff_count]=false;
+      bit_buff_count++; 
+    }
+
+    else if(bit_buff_count==1){
+//      PORTB&= ~_BV(PB4);
+//      digitalWrite(12,LOW);
+      bit_buffer[bit_buff_count]=false;
+      decodeBitBuff();
+      bit_buff_count=0;  
+    }}
   }
 
   //checks if the current State is high
   else if(currentAnalogRx >= RX_HIGH_THRESHOLD )
   {
 //    Serial.println("HIGH"); //uncomment to debug
+   digitalWrite(12,HIGH);
+
     currentRx=true;
+    if(!syncTimer){
+    if(bit_buff_count==0){
+//      PORTB |= _BV(PB4);
+//      digitalWrite(12,HIGH);
+      bit_buffer[bit_buff_count]=true;
+      bit_buff_count++;
+    }
+
+    else if(bit_buff_count==1){
+//      digitalWrite(12,HIGH);
+//      PORTB |= _BV(PB4);
+      bit_buffer[bit_buff_count]=true;
+      decodeBitBuff();
+      bit_buff_count=0;
+    }}
+
   }
 
   if(currentRx==prevRx)
@@ -360,62 +509,95 @@ bool phyDetect()
       wait_true=false;
     }
   }
-  if(currentRx>prevRx && prevData!=false) // detects rising edge(true) and prevents misdetection of false
+  if(syncTimer==true){
+  if(currentRx>prevRx) // detects rising edge(true) and prevents misdetection of false
   {
 //    Serial.println("RE"); //uncomment to debug
-    currentPhyState=PHY_RX; //setting this variable so that phySense() does not improperly detect this as idle State
+//    currentPhyState=PHY_RX; //setting this variable so that phySense() does not improperly detect this as idle State
     risingEdge=true;
     fallingEdge=false;
-    phy_rx_bit_queue.enqueue(true);
+    syncTimer=false;
+    TimerFreq=1000;
+    timerControlVariable=(65535) - CLOCK_FREQ/(PRESCALAR_TIMER * TimerFreq);
+    addBitData(true);
+//    phy_rx_bit_queue.enqueue(true);
     prevData=true;
-    bitCount++;
+//    pState=!pState;
+//  digitalWrite(13,pState);
+//    bitCount++;
+  }
+  else {
+    TimerFreq=4000;
+    timerControlVariable= (65535) - CLOCK_FREQ/(PRESCALAR_TIMER * TimerFreq);
+  }
   }
 
-  if(currentRx<prevRx && prevData!=true) // detects falling edge(false) and prevents misdetection of true
-  {
-//    Serial.println("FE"); //uncomment to debug
-    currentPhyState=PHY_RX; //setting this variable so that phySense() does not improperly detect this as idle State
-    risingEdge=false;
-    fallingEdge=true;
-    phy_rx_bit_queue.enqueue(false);
-    prevData=false;
-    bitCount++;
-  }
+//  if(currentRx<prevRx ) // detects falling edge(false) and prevents misdetection of true
+//  {
+////    Serial.println("FE"); //uncomment to debug
+//    currentPhyState=PHY_RX; //setting this variable so that phySense() does not improperly detect this as idle State
+//    risingEdge=false;
+//    fallingEdge=true;
+//    phy_rx_bit_queue.enqueue(false);
+//    prevData=false;
+//    bitCount++;
+//  }
 
-  if(bitCount==8){ //once 8 bits are received, a byte is formed from it.
+//  if(bitCount==8){ //once 8 bits are received, a byte is formed from it.
 //    Serial.println("BF"); //uncomment to debug
 //    currentPhyState=PHY_RX; //setting this variable so that phySense() does not improperly detect this as idle State
-    bitCount=0;
-    formRxByte();
-    unsigned char tmpByte= phy_rx_message_queue.dequeue();
-//    Serial.print(tmpByte, HEX);
+//    bitCount=0;
+//    formRxByte();
+//    unsigned char tmpByte= phy_rx_message_queue.dequeue();
+//    Serial.print(tmpByte,d HEX);
 //    Serial.println();
-    decodeFrame(tmpByte);
-  }
+//    decodeFrame(tmpByte);
+//  }
   prevAnalogRx=currentAnalogRx;
   prevRx=currentRx;
 }
 
-unsigned char tx_data[]={0xFF,0x0FF,0xFF,0xFF,0x00,0x0A,0x01,0x02,0x03,0x04,0x05};
+unsigned char tx_data[]={0xFF,0x02,0x01,0x00,0x0A,0x01,0x02,0x03,0x04,0x05};
+void enableFastADC(){
+    sbi(ADCSRA, ADPS2);
+    cbi(ADCSRA, ADPS1);
+    cbi(ADCSRA, ADPS0);
+}
 void setup()
 {
   initializeTimerLed();
   Serial.begin(115200);
-  currentPhyState=PHY_IDLE_STATE;
+#ifdef FAST_ADC
+  ADC_setup();
+  ADC_start_conversion(0);
+#else
+#ifdef FAST_ADC_2
+  enableFastADC();
+#endif
+#endif
+currentPhyState=PHY_IDLE_STATE;
   delay(1000);
-  phy_tx(tx_data,0x0A);
+//  phy_tx(tx_data,0x0A);
 //  while(!sync());  
 }
 
 unsigned long pTime;
+
+
 void loop()
 {
-  #ifdef TEST_TX
-  if(millis() - pTime >= 100){ //Test Case for transmission every one sec
-    phy_tx(tx_data,0x04);
+//  Serial.println(bitCount);
+//  Serial.print("by=");
+//  Serial.println(g_ubyte,HEX);
+ 
+ // #ifdef TEST_TX
+  if(millis() - pTime >= 50){ //Test Case for transmission every one sec
+//    phy_tx(tx_data,0x0A);
+//    Serial.println(g_byte_rec,HEX);
     pTime=millis();
+    
   }
-  #endif
+  //#endif
 
 }
 
